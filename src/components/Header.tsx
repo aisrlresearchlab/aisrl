@@ -67,7 +67,7 @@ export default function Header() {
 
       <button
         onClick={toggleDarkMode}
-        className="p-2.5 rounded border border-keel hover:bg-stone-100 dark:hover:bg-stone-900 transition-colors cursor-pointer"
+        className="p-2.5 rounded border border-keel hover:bg-stone-100 dark:hover:bg-stone-500 transition-colors cursor-pointer"
         aria-label="Toggle Dark Mode"
       >
         {darkMode ? (

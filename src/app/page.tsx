@@ -78,7 +78,7 @@ export default function HomePage() {
           
           {/* Portrait Column */}
           <div className="fade-item col-span-1 flex flex-col gap-4">
-            <div className="relative overflow-hidden rounded border border-keel bg-stone-100 dark:bg-stone-850 aspect-[3/4]">
+            <div className="relative overflow-hidden rounded border border-keel bg-stone-100 dark:bg-stone-850 aspect-3/4">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src="/lecturer_profile.png"
@@ -90,7 +90,7 @@ export default function HomePage() {
                   if (fallback) fallback.classList.remove("hidden");
                 }}
               />
-              <div className="prof-fallback hidden w-full h-full flex items-center justify-center font-serif text-4xl font-light text-muted bg-stone-200 dark:bg-stone-800">
+              <div className="prof-fallback w-full h-full flex items-center justify-center font-serif text-4xl font-light text-muted bg-stone-200 dark:bg-stone-800">
                 RJS
               </div>
             </div>
