@@ -3,13 +3,15 @@
 import React, { useState, useEffect, useRef, useTransition } from "react";
 import { gsap } from "gsap";
 import { NewsItem } from "@/lib/data";
+import { collection, onSnapshot } from "firebase/firestore";
+import { db } from "@/lib/firebase";
 
 interface NewsClientProps {
   initialNews: NewsItem[];
 }
 
 export default function NewsClient({ initialNews }: NewsClientProps) {
-  // Sync state with localStorage to match Admin updates
+  // Sync state in real-time with Firestore collection
   const [news, setNews] = useState<NewsItem[]>(initialNews);
   const [inputValue, setInputValue] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -25,27 +27,25 @@ export default function NewsClient({ initialNews }: NewsClientProps) {
   const controlsRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Sync from localStorage on mount and register listeners for cross-tab updates
+  // Set up real-time listener for Firestore collection
   useEffect(() => {
-    const loadStoredData = () => {
-      const stored = localStorage.getItem("aisrl_news");
-      if (stored) {
-        try {
-          setNews(JSON.parse(stored));
-        } catch (e) {
-          console.error("Failed to parse stored news:", e);
-        }
-      } else {
-        localStorage.setItem("aisrl_news", JSON.stringify(initialNews));
+    const colRef = collection(db, "news");
+    const unsubscribe = onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: NewsItem[] = [];
+        snapshot.forEach((doc) => {
+          list.push({ id: doc.id, ...doc.data() } as NewsItem);
+        });
+        setNews(list);
+      },
+      (err) => {
+        console.error("Firestore snapshot error, falling back to local dataset:", err);
       }
-    };
+    );
 
-    loadStoredData();
-
-    // Listen to local storage changes (for multiple open tabs)
-    window.addEventListener("storage", loadStoredData);
-    return () => window.removeEventListener("storage", loadStoredData);
-  }, [initialNews]);
+    return () => unsubscribe();
+  }, []);
 
   // Reset page when filters change
   useEffect(() => {

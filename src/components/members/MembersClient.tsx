@@ -3,13 +3,15 @@
 import React, { useState, useEffect, useRef, useTransition } from "react";
 import { gsap } from "gsap";
 import { Member } from "@/lib/data";
+import { collection, onSnapshot } from "firebase/firestore";
+import { db } from "@/lib/firebase";
 
 interface MembersClientProps {
   initialMembers: Member[];
 }
 
 export default function MembersClient({ initialMembers }: MembersClientProps) {
-  // Sync state with localStorage to match Admin updates
+  // Sync state in real-time with Firestore collection
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [inputValue, setInputValue] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -26,34 +28,32 @@ export default function MembersClient({ initialMembers }: MembersClientProps) {
   const controlsRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Sync from localStorage on mount and register listeners for cross-tab updates
+  // Set up real-time listener for Firestore collection
   useEffect(() => {
-    const loadStoredData = () => {
-      const stored = localStorage.getItem("aisrl_members");
-      if (stored) {
-        try {
-          setMembers(JSON.parse(stored));
-        } catch (e) {
-          console.error("Failed to parse stored members:", e);
-        }
-      } else {
-        localStorage.setItem("aisrl_members", JSON.stringify(initialMembers));
+    const colRef = collection(db, "members");
+    const unsubscribe = onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: Member[] = [];
+        snapshot.forEach((doc) => {
+          list.push({ id: doc.id, ...doc.data() } as Member);
+        });
+        setMembers(list);
+      },
+      (err) => {
+        console.error("Firestore snapshot error, falling back to local dataset:", err);
       }
-    };
+    );
 
-    loadStoredData();
-
-    // Listen to local storage changes (for multiple open tabs)
-    window.addEventListener("storage", loadStoredData);
-    return () => window.removeEventListener("storage", loadStoredData);
-  }, [initialMembers]);
+    return () => unsubscribe();
+  }, []);
 
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(1);
   }, [selectedCategory, searchQuery]);
 
-  // Filter Logic with React useTransition for fluid typing performance
+  // Filter Logic
   const filteredMembers = members.filter((member) => {
     const matchesCategory =
       selectedCategory === "all" || member.category === selectedCategory;
@@ -61,9 +61,7 @@ export default function MembersClient({ initialMembers }: MembersClientProps) {
     const query = searchQuery.toLowerCase().trim();
     if (!query) return matchesCategory;
 
-    const matchesName =
-      member.nameEn.toLowerCase().includes(query) ||
-      member.nameKo.includes(query);
+    const matchesName = member.name.toLowerCase().includes(query);
     const matchesCourse = member.course.toLowerCase().includes(query);
     const matchesEmail = member.email.toLowerCase().includes(query);
 
@@ -145,7 +143,7 @@ export default function MembersClient({ initialMembers }: MembersClientProps) {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={member.image}
-            alt={member.nameEn}
+            alt={member.name}
             className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-108"
             onError={() => {
               setFailedImages((prev) => ({ ...prev, [member.id]: true }));
@@ -157,7 +155,7 @@ export default function MembersClient({ initialMembers }: MembersClientProps) {
 
     return (
       <div className="w-20 h-20 md:w-24 md:h-24 flex items-center justify-center rounded border border-keel bg-stone-100 dark:bg-stone-800 font-serif text-2xl font-light text-muted group-hover:border-accent transition-colors duration-300">
-        {member.nameEn.charAt(0)}
+        {member.name.charAt(0)}
       </div>
     );
   };
@@ -263,11 +261,8 @@ export default function MembersClient({ initialMembers }: MembersClientProps) {
                     <div>
                       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                         <h2 className="font-serif text-2xl font-medium tracking-tight">
-                          {member.nameEn}
+                          {member.name}
                         </h2>
-                        <span className="text-muted text-sm font-light">
-                          {member.nameKo}
-                        </span>
                       </div>
                       
                       <p className="text-sm font-light text-muted mt-1 leading-relaxed">

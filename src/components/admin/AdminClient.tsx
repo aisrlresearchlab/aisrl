@@ -3,6 +3,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { gsap } from "gsap";
 import { Member, Publication, NewsItem } from "@/lib/data";
+import { db, auth } from "@/lib/firebase";
+import { collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { useRouter } from "next/navigation";
 
 interface AdminClientProps {
   initialMembers: Member[];
@@ -15,9 +19,23 @@ export default function AdminClient({
   initialPublications,
   initialNews,
 }: AdminClientProps) {
+  const router = useRouter();
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [activeTab, setActiveTab] = useState<"members" | "publications" | "news">("members");
+
+  // Protect route client-side; redirect to /login if unauthenticated
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        router.push("/login");
+      } else {
+        setIsCheckingAuth(false);
+      }
+    });
+    return () => unsubscribe();
+  }, [router]);
   
-  // Data States (synced with localStorage)
+  // Data States (synchronized in real-time with Firestore)
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [publications, setPublications] = useState<Publication[]>(initialPublications);
   const [news, setNews] = useState<NewsItem[]>(initialNews);
@@ -31,11 +49,11 @@ export default function AdminClient({
   // Modal / Form States
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [isCompressing, setIsCompressing] = useState(false);
 
-  // Form Fields
+  // Form Fields (Removed Korean Name)
   const [memberForm, setMemberForm] = useState<Omit<Member, "id">>({
-    nameEn: "",
-    nameKo: "",
+    name: "",
     category: "phd",
     course: "",
     email: "",
@@ -63,39 +81,41 @@ export default function AdminClient({
   const containerRef = useRef<HTMLDivElement>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
 
-  // Sync from localStorage on mount and register storage listeners
+  // Sync from Firestore in real-time
   useEffect(() => {
-    const loadStoredData = () => {
-      // 1. Members
-      const storedMembers = localStorage.getItem("aisrl_members");
-      if (storedMembers) {
-        try { setMembers(JSON.parse(storedMembers)); } catch(e) { console.error(e); }
-      } else {
-        localStorage.setItem("aisrl_members", JSON.stringify(initialMembers));
-      }
+    // 1. Members
+    const mUnsub = onSnapshot(collection(db, "members"), (snapshot) => {
+      const list: Member[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as Member);
+      });
+      setMembers(list);
+    });
 
-      // 2. Publications
-      const storedPubs = localStorage.getItem("aisrl_publications");
-      if (storedPubs) {
-        try { setPublications(JSON.parse(storedPubs)); } catch(e) { console.error(e); }
-      } else {
-        localStorage.setItem("aisrl_publications", JSON.stringify(initialPublications));
-      }
+    // 2. Publications
+    const pUnsub = onSnapshot(collection(db, "publications"), (snapshot) => {
+      const list: Publication[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as Publication);
+      });
+      setPublications(list);
+    });
 
-      // 3. News
-      const storedNews = localStorage.getItem("aisrl_news");
-      if (storedNews) {
-        try { setNews(JSON.parse(storedNews)); } catch(e) { console.error(e); }
-      } else {
-        localStorage.setItem("aisrl_news", JSON.stringify(initialNews));
-      }
+    // 3. News
+    const nUnsub = onSnapshot(collection(db, "news"), (snapshot) => {
+      const list: NewsItem[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as NewsItem);
+      });
+      setNews(list);
+    });
+
+    return () => {
+      mUnsub();
+      pUnsub();
+      nUnsub();
     };
-
-    loadStoredData();
-
-    window.addEventListener("storage", loadStoredData);
-    return () => window.removeEventListener("storage", loadStoredData);
-  }, [initialMembers, initialPublications, initialNews]);
+  }, []);
 
   // GSAP: Entry Animation on load
   useEffect(() => {
@@ -123,48 +143,95 @@ export default function AdminClient({
     return () => ctx.revert();
   }, [activeTab, membersPage, pubsPage, newsPage]);
 
-  // Save changes helper to localStorage
-  const persistMembers = (updated: Member[]) => {
-    setMembers(updated);
-    localStorage.setItem("aisrl_members", JSON.stringify(updated));
-  };
+  // Client-Side Image Compression (< 100KB)
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-  const persistPublications = (updated: Publication[]) => {
-    setPublications(updated);
-    localStorage.setItem("aisrl_publications", JSON.stringify(updated));
-  };
+    setIsCompressing(true);
 
-  const persistNews = (updated: NewsItem[]) => {
-    setNews(updated);
-    localStorage.setItem("aisrl_news", JSON.stringify(updated));
+    try {
+      const compressedBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (event) => {
+          const img = new Image();
+          img.src = event.target?.result as string;
+          img.onload = () => {
+            const canvas = document.createElement("canvas");
+            let width = img.width;
+            let height = img.height;
+
+            // Resize dimensions to a maximum of 800px width/height to limit initial size
+            const MAX_SIZE = 800;
+            if (width > height) {
+              if (width > MAX_SIZE) {
+                height = Math.round((height * MAX_SIZE) / width);
+                width = MAX_SIZE;
+              }
+            } else {
+              if (height > MAX_SIZE) {
+                width = Math.round((width * MAX_SIZE) / height);
+                height = MAX_SIZE;
+              }
+            }
+
+            canvas.width = width;
+            canvas.height = height;
+
+            const ctx = canvas.getContext("2d");
+            ctx?.drawImage(img, 0, 0, width, height);
+
+            // Iteratively scale quality down until file size falls under 100KB
+            let quality = 0.95;
+            let base64 = "";
+            let sizeInBytes = 0;
+
+            do {
+              base64 = canvas.toDataURL("image/jpeg", quality);
+              sizeInBytes = base64.length * 0.75; // Approx bytes in base64 string
+              quality -= 0.08;
+            } while (sizeInBytes > 100 * 1024 && quality > 0.05);
+
+            console.log(`Image compressed successfully. Size: ${(sizeInBytes / 1024).toFixed(2)} KB`);
+            resolve(base64);
+          };
+          img.onerror = (err) => reject(err);
+        };
+        reader.onerror = (err) => reject(err);
+      });
+
+      setMemberForm((prev) => ({ ...prev, image: compressedBase64 }));
+    } catch (err) {
+      console.error("Image compression error:", err);
+      alert("Failed to compress image. Please try another file.");
+    } finally {
+      setIsCompressing(false);
+    }
   };
 
   // DELETE Handlers
-  const handleDeleteMember = (id: string) => {
-    const updated = members.filter((m) => m.id !== id);
-    persistMembers(updated);
-    // Correct page if it becomes empty
-    const newMaxPage = Math.max(1, Math.ceil(updated.length / itemsPerPage));
-    if (membersPage > newMaxPage) {
-      setMembersPage(newMaxPage);
+  const handleDeleteMember = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, "members", id));
+    } catch (e) {
+      console.error("Error deleting member:", e);
     }
   };
 
-  const handleDeletePub = (id: string) => {
-    const updated = publications.filter((p) => p.id !== id);
-    persistPublications(updated);
-    const newMaxPage = Math.max(1, Math.ceil(updated.length / itemsPerPage));
-    if (pubsPage > newMaxPage) {
-      setPubsPage(newMaxPage);
+  const handleDeletePub = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, "publications", id));
+    } catch (e) {
+      console.error("Error deleting publication:", e);
     }
   };
 
-  const handleDeleteNews = (id: string) => {
-    const updated = news.filter((n) => n.id !== id);
-    persistNews(updated);
-    const newMaxPage = Math.max(1, Math.ceil(updated.length / itemsPerPage));
-    if (newsPage > newMaxPage) {
-      setNewsPage(newMaxPage);
+  const handleDeleteNews = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, "news", id));
+    } catch (e) {
+      console.error("Error deleting news:", e);
     }
   };
 
@@ -172,8 +239,7 @@ export default function AdminClient({
   const startEditMember = (m: Member) => {
     setEditingId(m.id);
     setMemberForm({
-      nameEn: m.nameEn,
-      nameKo: m.nameKo,
+      name: m.name,
       category: m.category,
       course: m.course,
       email: m.email,
@@ -209,70 +275,56 @@ export default function AdminClient({
   };
 
   // CREATE / SAVE Handlers
-  const handleSaveMember = (e: React.FormEvent) => {
+  const handleSaveMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!memberForm.nameEn || !memberForm.course) return;
+    if (!memberForm.name || !memberForm.course) return;
 
-    if (editingId) {
-      const updated = members.map((m) => (m.id === editingId ? { ...m, ...memberForm } : m));
-      persistMembers(updated);
-    } else {
-      const newMember: Member = {
-        id: `member-${Date.now()}`,
+    const id = editingId || `member-${Date.now()}`;
+    try {
+      await setDoc(doc(db, "members", id), {
         ...memberForm,
-      };
-      const updated = [...members, newMember];
-      persistMembers(updated);
-      // Go to last page to see new item
-      setMembersPage(Math.ceil(updated.length / itemsPerPage));
+      });
+      closeForm();
+    } catch (err) {
+      console.error("Error writing member to Firestore:", err);
     }
-    closeForm();
   };
 
-  const handleSavePub = (e: React.FormEvent) => {
+  const handleSavePub = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pubForm.title || !pubForm.authors) return;
 
-    if (editingId) {
-      const updated = publications.map((p) => (p.id === editingId ? { ...p, ...pubForm } : p));
-      persistPublications(updated);
-    } else {
-      const newPub: Publication = {
-        id: `pub-${Date.now()}`,
+    const id = editingId || `pub-${Date.now()}`;
+    try {
+      await setDoc(doc(db, "publications", id), {
         ...pubForm,
-      };
-      const updated = [...publications, newPub];
-      persistPublications(updated);
-      setPubsPage(Math.ceil(updated.length / itemsPerPage));
+      });
+      closeForm();
+    } catch (err) {
+      console.error("Error writing publication to Firestore:", err);
     }
-    closeForm();
   };
 
-  const handleSaveNews = (e: React.FormEvent) => {
+  const handleSaveNews = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newsForm.title || !newsForm.content) return;
 
-    if (editingId) {
-      const updated = news.map((n) => (n.id === editingId ? { ...n, ...newsForm } : n));
-      persistNews(updated);
-    } else {
-      const newNews: NewsItem = {
-        id: `news-${Date.now()}`,
+    const id = editingId || `news-${Date.now()}`;
+    try {
+      await setDoc(doc(db, "news", id), {
         ...newsForm,
-      };
-      const updated = [...news, newNews];
-      persistNews(updated);
-      setNewsPage(Math.ceil(updated.length / itemsPerPage));
+      });
+      closeForm();
+    } catch (err) {
+      console.error("Error writing news to Firestore:", err);
     }
-    closeForm();
   };
 
   const closeForm = () => {
     setIsFormOpen(false);
     setEditingId(null);
     setMemberForm({
-      nameEn: "",
-      nameKo: "",
+      name: "",
       category: "phd",
       course: "",
       email: "",
@@ -315,6 +367,26 @@ export default function AdminClient({
     newsPage * itemsPerPage
   );
 
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      router.push("/login");
+    } catch (err) {
+      console.error("Sign Out Error:", err);
+    }
+  };
+
+  if (isCheckingAuth) {
+    return (
+      <div className="w-full min-h-screen bg-background text-foreground flex items-center justify-center font-sans">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-8 h-8 rounded-full border border-keel border-t-accent animate-spin" />
+          <span className="text-xs font-mono tracking-widest uppercase text-muted">Authenticating Session...</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -323,16 +395,24 @@ export default function AdminClient({
       <main className="w-full max-w-5xl mx-auto px-6 py-12 md:py-20 flex flex-col gap-12">
         
         {/* Editorial Heading */}
-        <div className="flex flex-col gap-4 cms-fade">
-          <span className="text-xs font-mono tracking-widest uppercase text-accent">
-            AISRL Administration Console
-          </span>
-          <h1 className="font-serif text-5xl md:text-7xl font-extralight tracking-tight">
-            Admin Dashboard
-          </h1>
-          <p className="text-muted font-serif text-lg italic max-w-xl">
-            Edit the data here, and it will immediately reflect across your public pages using local persistence.
-          </p>
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-6 cms-fade">
+          <div className="flex flex-col gap-4">
+            <span className="text-xs font-mono tracking-widest uppercase text-accent">
+              AISRL Administration Console
+            </span>
+            <h1 className="font-serif text-5xl md:text-7xl font-extralight tracking-tight">
+              Admin Dashboard
+            </h1>
+            <p className="text-muted font-serif text-lg italic max-w-xl">
+              Edit the data here, and it will immediately reflect across your public pages using Firestore database sync.
+            </p>
+          </div>
+          <button
+            onClick={handleSignOut}
+            className="flex-shrink-0 px-4 py-2 border border-keel rounded hover:border-accent font-mono text-xs tracking-wider uppercase cursor-pointer text-muted hover:text-foreground transition-all duration-300"
+          >
+            Sign Out
+          </button>
         </div>
 
         {/* Keel Dividing Line */}
@@ -380,25 +460,15 @@ export default function AdminClient({
             {/* MEMBER FORM */}
             {activeTab === "members" && (
               <form onSubmit={handleSaveMember} className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-xs tracking-widest uppercase text-muted font-light">English Name *</label>
+                <div className="flex flex-col gap-1.5 col-span-1 md:col-span-2">
+                  <label className="text-xs tracking-widest uppercase text-muted font-light">Full Name *</label>
                   <input
                     type="text"
                     required
-                    value={memberForm.nameEn}
-                    onChange={(e) => setMemberForm({ ...memberForm, nameEn: e.target.value })}
+                    value={memberForm.name}
+                    onChange={(e) => setMemberForm({ ...memberForm, name: e.target.value })}
                     className="p-2.5 bg-background border border-keel rounded text-sm focus:border-accent outline-none"
                     placeholder="e.g. Jane Watson"
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-xs tracking-widest uppercase text-muted font-light">Korean Name</label>
-                  <input
-                    type="text"
-                    value={memberForm.nameKo}
-                    onChange={(e) => setMemberForm({ ...memberForm, nameKo: e.target.value })}
-                    className="p-2.5 bg-background border border-keel rounded text-sm focus:border-accent outline-none"
-                    placeholder="e.g. 제인 왓슨"
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
@@ -458,8 +528,36 @@ export default function AdminClient({
                     placeholder="https://example.com"
                   />
                 </div>
+
+                {/* Profile Picture upload with client-side compression */}
+                <div className="flex flex-col gap-1.5 col-span-1 md:col-span-2 border-t border-keel pt-4">
+                  <label className="text-xs tracking-widest uppercase text-muted font-light">Profile Picture</label>
+                  <div className="flex items-center gap-6 mt-1">
+                    {memberForm.image && (
+                      <div className="w-16 h-16 rounded overflow-hidden border border-keel">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={memberForm.image} alt="Preview" className="w-full h-full object-cover" />
+                      </div>
+                    )}
+                    <div className="flex-1 flex flex-col gap-1">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleImageUpload}
+                        className="text-xs text-muted"
+                      />
+                      <span className="text-[10px] font-mono text-muted">
+                        {isCompressing 
+                          ? "Compressing image under 100KB..." 
+                          : "Images will automatically be compressed to < 100KB for Firestore storage."
+                        }
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="col-span-1 md:col-span-2 flex gap-4 mt-4">
-                  <button type="submit" className="px-5 py-2 bg-accent text-background rounded text-xs font-mono uppercase tracking-widest cursor-pointer">Save Changes</button>
+                  <button type="submit" disabled={isCompressing} className="px-5 py-2 bg-accent text-background rounded text-xs font-mono uppercase tracking-widest cursor-pointer disabled:opacity-50">Save Changes</button>
                   <button type="button" onClick={closeForm} className="px-5 py-2 border border-keel text-muted rounded text-xs font-mono uppercase tracking-widest cursor-pointer">Cancel</button>
                 </div>
               </form>
@@ -613,12 +711,16 @@ export default function AdminClient({
                   {paginatedMembers.map((m) => (
                     <div key={m.id} className="grid grid-cols-12 p-4 items-center text-sm font-light">
                       <div className="col-span-4 flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full border border-keel flex items-center justify-center font-serif text-sm bg-stone-100 dark:bg-stone-850 select-none">
-                          {m.nameEn.charAt(0)}
+                        <div className="w-8 h-8 rounded-full border border-keel flex items-center justify-center font-serif text-sm bg-stone-100 dark:bg-stone-850 select-none overflow-hidden">
+                          {m.image ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={m.image} alt={m.name} className="w-full h-full object-cover" />
+                          ) : (
+                            m.name.charAt(0)
+                          )}
                         </div>
                         <div className="flex flex-col">
-                          <span className="font-serif text-base">{m.nameEn}</span>
-                          <span className="text-xs text-muted font-light">{m.nameKo}</span>
+                          <span className="font-serif text-base">{m.name}</span>
                         </div>
                       </div>
                       <span className="col-span-2 capitalize text-xs tracking-wider text-muted font-mono">{m.category}</span>

@@ -3,13 +3,15 @@
 import React, { useState, useEffect, useRef, useTransition } from "react";
 import { gsap } from "gsap";
 import { Publication } from "@/lib/data";
+import { collection, onSnapshot } from "firebase/firestore";
+import { db } from "@/lib/firebase";
 
 interface PublicationsClientProps {
   initialPublications: Publication[];
 }
 
 export default function PublicationsClient({ initialPublications }: PublicationsClientProps) {
-  // Sync state with localStorage to match Admin updates
+  // Sync state in real-time with Firestore collection
   const [publications, setPublications] = useState<Publication[]>(initialPublications);
   const [inputValue, setInputValue] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -25,27 +27,25 @@ export default function PublicationsClient({ initialPublications }: Publications
   const controlsRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Sync from localStorage on mount and register listeners for cross-tab updates
+  // Set up real-time listener for Firestore collection
   useEffect(() => {
-    const loadStoredData = () => {
-      const stored = localStorage.getItem("aisrl_publications");
-      if (stored) {
-        try {
-          setPublications(JSON.parse(stored));
-        } catch (e) {
-          console.error("Failed to parse stored publications:", e);
-        }
-      } else {
-        localStorage.setItem("aisrl_publications", JSON.stringify(initialPublications));
+    const colRef = collection(db, "publications");
+    const unsubscribe = onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: Publication[] = [];
+        snapshot.forEach((doc) => {
+          list.push({ id: doc.id, ...doc.data() } as Publication);
+        });
+        setPublications(list);
+      },
+      (err) => {
+        console.error("Firestore snapshot error, falling back to local dataset:", err);
       }
-    };
+    );
 
-    loadStoredData();
-
-    // Listen to local storage changes (for multiple open tabs)
-    window.addEventListener("storage", loadStoredData);
-    return () => window.removeEventListener("storage", loadStoredData);
-  }, [initialPublications]);
+    return () => unsubscribe();
+  }, []);
 
   // Reset page when filters change
   useEffect(() => {
@@ -127,7 +127,16 @@ export default function PublicationsClient({ initialPublications }: Publications
 
   // Helper to bold lab authors
   const formatAuthors = (authorsStr: string) => {
-    const members = ["John Doe", "Emily Watson", "Michael Chang", "Reynaldo Joshua Salaki", "Sarah Jenkins", "Sophia Li", "David Miller", "Lucas Martinez"];
+    const members = [
+      "Reynaldo Joshua Salaki",
+      "Kenneth Yosua Palilingan",
+      "Heilbert Armando Mapaly",
+      "Henry Valentino Kainde",
+      "Salvius Paulus Lengkong",
+      "Yuri Vanli Akay",
+      "Aldo Christian",
+      "Gabriela Moningka"
+    ];
     const parts = authorsStr.split(/,\s*/);
     
     return parts.map((author, index) => {
